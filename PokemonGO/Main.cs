@@ -24,6 +24,8 @@ namespace PokemonGO
         private bool _customSearchSingleLocation;
         private PointLatLng _customLatLng;
 
+		private IList<ulong> _notifiedPokemon = new List<ulong>();
+
         public Main()
         {
             InitializeComponent();
@@ -81,8 +83,7 @@ namespace PokemonGO
                         {
                             gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
                             var objects = await _client.GetNearbyPokemons();
-                            foreach (var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker))
-                            {
+							foreach(var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker)) {
                                 gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
                             }
                             foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
@@ -101,8 +102,8 @@ namespace PokemonGO
                             {
                                 gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
                                 var objects = await _client.GetNearbyPokemons();
-                                foreach (var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker))
-                                {
+								var i1 = i;
+								foreach(var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker)) {
                                     gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
                                 }
                                 foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
@@ -131,9 +132,15 @@ namespace PokemonGO
                             {
                                 gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
                                 var objects = await _client.GetNearbyPokemons();
-                                foreach (var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker))
-                                {
-                                    gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
+	                            var i1 = i;
+	                            foreach (var pokemon in objects.Pokemons) {
+		                            var marker = Specialized.Pokemon.Utils.CreateMarker(pokemon);
+									if((i1 == 0 || !Settings.NOTIFICATION_BLACKLIST.Contains(pokemon.PokedexTypeId)) && !_notifiedPokemon.Contains(pokemon.EncounterId)) {
+										System.Media.SystemSounds.Beep.Play();
+										txtHistory.AppendText(Environment.NewLine + $"Found {pokemon.PokedexTypeId.ToString().Substring(pokemon.PokedexTypeId.ToString().LastIndexOf("Pokemon", StringComparison.Ordinal) + 7)}");
+										_notifiedPokemon.Add(pokemon.EncounterId);
+									}
+									gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
                                 }
                                 foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
                                 {
@@ -143,9 +150,15 @@ namespace PokemonGO
                             Thread.Sleep(Settings.STEP_DELAY * 1000);
                         }
                         if (_scanningStopped) continue;
-                        Thread.Sleep(Settings.CLEAR_DELAY*1000);
+	                    for (var i = 0; i < Settings.CLEAR_DELAY * 10; i++) {
+							Thread.Sleep(100);
+						}
                         ClearMap();
-                    }
+	                    x = 0;
+	                    y = 0;
+						dx = 0;
+						dy = -1;
+					}
                 }
             }
             catch (Exception ex)

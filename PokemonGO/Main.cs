@@ -2,66 +2,141 @@
 using GMap.NET.WindowsForms;
 using GMap.NET.WindowsForms.Markers;
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
 using System.Drawing;
 using System.Linq;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using PokemonGo.RocketAPI.GeneratedCode;
 
 namespace PokemonGO
 {
     public partial class Main : Form
     {
-        private PointLatLng _currentLatLng;
-        private Specialized.Protocol.Manager _client;
-        private bool _scanningStopped = true;
-        private bool _customLatSet;
-        private bool _customSearchSingleLocation;
-        private PointLatLng _customLatLng;
+        private PointLatLng Position;
+        private Specialized.Protocol.Manager Client;
 
-		private IList<ulong> _notifiedPokemon = new List<ulong>();
+        private bool IsExploring;
+        private Thread Exploration;
 
+        private delegate void ClearCallback();
+        private delegate void MarkerCallback(GMarkerGoogle Marker);
+        private delegate void WriteCallback(string Line, bool Date);
+        
         public Main()
         {
             InitializeComponent();
+
+            InitLogger();
         }
 
-        private async void AttemptLogin()
+        private void InitLogger()
         {
-            try
+            WriteLine("Pokemon GO Explorer");
+            WriteLine("Copyright (C) 2016 - W00dL3cs");
+            WriteLine();
+        }
+
+        private void WriteLine()
+        {
+            WriteLine("", false);
+        }
+
+        private void WriteLine(string Line = "", bool Date = true)
+        {
+            if (txtHistory.InvokeRequired)
             {
-                btnPause.Text = _scanningStopped ? "Start Auto Scanning" : "Stop Auto Scanning";
-                btnLogin.Visible = false;
-                txtHistory.AppendText(Environment.NewLine + "Attempting to login...");
-                _client = new Specialized.Protocol.Manager(gMapControl1.Position.Lat, gMapControl1.Position.Lng);
-                if (!await _client.PerformLogin(Settings.PTC_USERNAME, Settings.PTC_PASSWORD))
-                {
-                    btnLogin.Visible = true;
-                    txtHistory.AppendText(Environment.NewLine + "Login failed!");
-                    AttemptLogin();
-                    return;
-                }
-                btnLogin.Visible = false;
-                txtHistory.AppendText(Environment.NewLine + "Logged in!");
-                gMapControl1.GrayScaleMode = false;
-                var exploration = new Thread(Explore);
-                exploration.Start();
+                var Callback = new WriteCallback(WriteLine);
+
+                Invoke(Callback, Line, Date);
             }
-            catch (Exception ex)
+            else
             {
-                txtHistory.AppendText(Environment.NewLine + ex.Message);
+                txtHistory.AppendText(string.Format(((Date) ? "[{0}] - " : "") + "{1}{2}", DateTime.Now.ToShortTimeString(), Line, Environment.NewLine));
             }
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
             CreateMap();
+
             AttemptLogin();
+        }
+
+        private void CreateMap()
+        {
+            gMapControl1.GrayScaleMode = true;
+            gMapControl1.DragButton = MouseButtons.Left;
+            GMaps.Instance.Mode = AccessMode.ServerOnly;
+
+            gMapControl1.MapProvider = GMap.NET.MapProviders.GoogleMapProvider.Instance;
+            gMapControl1.SetPositionByKeywords(Settings.STARTING_LOCATION);
+
+            Position = gMapControl1.Position;
+
+            var Overlay = new GMapOverlay("Markers");
+            var Marker = new GMarkerGoogle(gMapControl1.Position, GMarkerGoogleType.blue_small);
+
+            Overlay.Markers.Add(Marker);
+            gMapControl1.Overlays.Add(Overlay);
+
+            SetPlayerPosition(Position);
+        }
+
+        private async void AttemptLogin()
+        {
+            try
+            {
+                WriteLine("Performing login operations...");
+
+                Specialized.Controls.Helper.SetVisible(btnLogin, false);
+                Specialized.Controls.Helper.SetVisible(btnPause, false);
+                
+                Client = new Specialized.Protocol.Manager(gMapControl1.Position.Lat, gMapControl1.Position.Lng);
+
+                if (!await Client.PerformLogin(Settings.PTC_USERNAME, Settings.PTC_PASSWORD))
+                {
+                    WriteLine("Login failed! Please try again.");
+
+                    Specialized.Controls.Helper.SetVisible(btnLogin);
+                    
+                    return;
+                }
+
+                WriteLine("Logged in!");
+
+                gMapControl1.GrayScaleMode = false;
+
+                Specialized.Controls.Helper.SetVisible(btnPause);
+            }
+            catch (Exception ex)
+            {
+                WriteLine("Error! Message: " + ex.Message);
+            }
+        }
+
+        private void CreateThread()
+        {
+            Exploration = new Thread(Explore);
+
+            Exploration.Start();
+        }
+
+        private void AddMarker(GMarkerGoogle Marker)
+        {
+            try
+            {
+                if (gMapControl1.InvokeRequired)
+                {
+                    var Callback = new MarkerCallback(AddMarker);
+
+                    Invoke(Callback, Marker);
+                }
+                else
+                {
+                    gMapControl1.Overlays.FirstOrDefault().Markers.Add(Marker);
+                }
+            }
+            catch { }
         }
 
         private async void Explore()
@@ -71,207 +146,204 @@ namespace PokemonGO
             var dx = 0;
             var dy = -1;
 
+            IsExploring = true;
+
             try
             {
-                if (_customLatSet)
+                for (int i = 1; i <= Settings.EXPLORATION_STEPS; i++)
                 {
-                    if (_customSearchSingleLocation)
-                    {
-                        var destination = Specialized.Exploration.Helper.CalculateNextStep(_currentLatLng.Lat, _currentLatLng.Lng, Settings.EXPLORATION_STEPS, ref x, ref y, ref dx, ref dy);
+                    var Destination = Specialized.Exploration.Helper.CalculateNextStep(Position.Lat, Position.Lng, Settings.EXPLORATION_STEPS, ref x, ref y, ref dx, ref dy);
 
-                        if (await _client.RequestMove(destination.Lat, destination.Lng))
+                    if (await Client.RequestMove(Destination.Lat, Destination.Lng))
+                    {
+                        WriteLine(string.Format("[#{0}] Moving to: ({1},{2}).", i, Destination.Lat, Destination.Lng));
+
+                        SetPlayerPosition(Destination);
+
+                        var Objects = await Client.GetNearbyData();
+
+                        foreach (var Marker in Objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker))
                         {
-                            gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
-                            var objects = await _client.GetNearbyPokemons();
-							foreach(var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker)) {
-                                gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                            }
-                            foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
-                            {
-                                gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                            }
+                            AddMarker(Marker);
+                        }
+
+                        foreach (var Marker in Objects.Forts.Where(Fort => Fort.FortType != 1).Select(Specialized.Forts.Utils.CreateMarker))
+                        {
+                            AddMarker(Marker);
                         }
                     }
-                    else
-                    {
-                        for (var i = 0; i < Settings.EXPLORATION_STEPS; i++)
-                        {
-                            var destination = Specialized.Exploration.Helper.CalculateNextStep(_currentLatLng.Lat, _currentLatLng.Lng, Settings.EXPLORATION_STEPS, ref x, ref y, ref dx, ref dy);
 
-                            if (await _client.RequestMove(destination.Lat, destination.Lng))
-                            {
-                                gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
-                                var objects = await _client.GetNearbyPokemons();
-								var i1 = i;
-								foreach(var marker in objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker)) {
-                                    gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                                }
-                                foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
-                                {
-                                    gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                                }
-                            }
-                            Thread.Sleep(Settings.STEP_DELAY * 1000);
-                        }
-                    }
-                    _customLatSet = false;
+                    Thread.Sleep(Settings.STEP_DELAY * 1000);
                 }
-                else
-                {
-                    while (!_scanningStopped)
-                    {
-                        for (var i = 0; i < Settings.EXPLORATION_STEPS; i++)
-                        {
-                            if (_scanningStopped)
-                            {
-                                continue;
-                            }
-                            var destination = Specialized.Exploration.Helper.CalculateNextStep(_currentLatLng.Lat, _currentLatLng.Lng, Settings.EXPLORATION_STEPS, ref x, ref y, ref dx, ref dy);
 
-                            if (await _client.RequestMove(destination.Lat, destination.Lng))
-                            {
-                                gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault().Position = destination;
-                                var objects = await _client.GetNearbyPokemons();
-	                            var i1 = i;
-	                            foreach (var pokemon in objects.Pokemons) {
-		                            var marker = Specialized.Pokemon.Utils.CreateMarker(pokemon);
-									if((i1 == 0 || !Settings.NOTIFICATION_BLACKLIST.Contains(pokemon.PokedexTypeId)) && !_notifiedPokemon.Contains(pokemon.EncounterId)) {
-										System.Media.SystemSounds.Beep.Play();
-										txtHistory.AppendText(Environment.NewLine + $"Found {pokemon.PokedexTypeId.ToString().Substring(pokemon.PokedexTypeId.ToString().LastIndexOf("Pokemon", StringComparison.Ordinal) + 7)}");
-										_notifiedPokemon.Add(pokemon.EncounterId);
-									}
-									gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                                }
-                                foreach (var marker in from fort in objects.Forts where fort.FortType != 1 select Specialized.Forts.Utils.CreateMarker(fort))
-                                {
-                                    gMapControl1.Overlays.FirstOrDefault().Markers.Add(marker);
-                                }
-                            }
-                            Thread.Sleep(Settings.STEP_DELAY * 1000);
-                        }
-                        if (_scanningStopped) continue;
-	                    for (var i = 0; i < Settings.CLEAR_DELAY * 10; i++) {
-							Thread.Sleep(100);
-						}
-                        ClearMap();
-	                    x = 0;
-	                    y = 0;
-						dx = 0;
-						dy = -1;
-					}
-                }
+                WriteLine(string.Format("Waiting {0} seconds before cleaning map...", Settings.CLEAR_DELAY));
+
+                Thread.Sleep(Settings.CLEAR_DELAY * 1000);
+
+                WriteLine("Cleaning map...");
+
+                ClearMap();
+
+                WriteLine("Exploration complete.");
+
+                SetPlayerPosition(Position);
+
+                Specialized.Controls.Helper.SetEnabled(btnPause);
+
+                IsExploring = false;
             }
-            catch (Exception ex)
+            catch (Exception e)
             {
-                // Ignore
             }
         }
 
-        private delegate void ClearCallback();
+        private void SetPlayerPosition(PointLatLng Position)
+        {
+            try
+            {
+                var Marker = gMapControl1.Overlays.FirstOrDefault().Markers.FirstOrDefault();
+
+                Marker.Position = Position;
+                Marker.ToolTipText = string.Format("Latitude: {0}{1}Longitude: {2}.", Position.Lat, Environment.NewLine, Position.Lng);
+            }
+            catch { }
+        }
 
         private void ClearMap()
         {
             if (gMapControl1.InvokeRequired)
             {
-                var callback = new ClearCallback(ClearMap);
-                Invoke(callback);
+                var Callback = new ClearCallback(ClearMap);
+
+                Invoke(Callback);
             }
             else
             {
-                for (var x = 0; x < 10; x++)
+                try
                 {
-                    var overlay = gMapControl1.Overlays.FirstOrDefault();
-                    if (overlay == null) return;
-                    for (var i = 1; i < overlay.Markers.Count; i++)
+                    var Overlay = gMapControl1.Overlays.FirstOrDefault();
+
+                    if (Overlay != null)
                     {
-                        overlay.Markers.RemoveAt(i);
+                        var Player = Overlay.Markers.FirstOrDefault();
+
+                        Overlay.Markers.Clear();
+
+                        Overlay.Markers.Add(Player);
                     }
                 }
+                catch { }
             }
-        }
-
-        private void CreateMap()
-        {
-            gMapControl1.DragButton = MouseButtons.Left;
-            GMaps.Instance.Mode = AccessMode.ServerOnly;
-            gMapControl1.MapProvider = GMap.NET.MapProviders.GoogleMapProvider.Instance;
-            gMapControl1.GrayScaleMode = true;
-            gMapControl1.SetPositionByKeywords(Settings.STARTING_LOCATION);
-            _currentLatLng = gMapControl1.Position;
-
-            var overlay = new GMapOverlay("Markers");
-            var position = new GMarkerGoogle(gMapControl1.Position, GMarkerGoogleType.blue_small)
-            {
-                ToolTipText = _currentLatLng.Lat + ", " + _currentLatLng.Lng
-            };
-
-            overlay.Markers.Add(position);
-            gMapControl1.Overlays.Add(overlay);
-        }
-
-        private void btnClear_Click(object sender, EventArgs e)
-        {
-            ClearMap();
         }
 
         private void btnPause_Click(object sender, EventArgs e)
         {
-            _scanningStopped = !_scanningStopped;
-            btnPause.Text = _scanningStopped ? "Start Auto Scanning" : "Stop Auto Scanning";
-            if (!_scanningStopped)
-            {
-                txtHistory.AppendText(Environment.NewLine + "Auto scanning " + Settings.EXPLORATION_STEPS + " steps near " + _currentLatLng.Lat + ", " + _currentLatLng.Lng);
-                Explore();
-            }
-            else
-            {
-                txtHistory.AppendText(Environment.NewLine + "Auto scanning stopped.");
-            }
-        }
+            CreateThread();
 
-        private void CustomLocation(bool searchSingleLocation, MouseEventArgs e)
-        {
-            var mouseEventArgs = e;
-            if (!_scanningStopped) return;
+            WriteLine(string.Format("Scanning started! Number of steps: {0}.", Settings.EXPLORATION_STEPS));
 
-            var lat = gMapControl1.FromLocalToLatLng(mouseEventArgs.X, mouseEventArgs.Y).Lat;
-            var lng = gMapControl1.FromLocalToLatLng(mouseEventArgs.X, mouseEventArgs.Y).Lng;
-
-            _customLatSet = true;
-            if (_customSearchSingleLocation)
-            {
-                txtHistory.AppendText(Environment.NewLine + "Scanning once at " + lat + ", " + lng);
-            }
-            else
-            {
-                txtHistory.AppendText(Environment.NewLine + "Scanning " + Settings.EXPLORATION_STEPS + " steps near " + lat + ", " + lng);
-            }
-            _customSearchSingleLocation = searchSingleLocation;
-            _customLatLng = new PointLatLng
-            {
-                Lat = lat,
-                Lng = lng
-            };
-            _currentLatLng = _customLatLng;
-
-            Explore();
+            Specialized.Controls.Helper.SetEnabled(btnPause, false);
         }
 
         private void gMapControl1_DoubleClick(object sender, EventArgs e)
         {
-            CustomLocation(false, (MouseEventArgs)e);
+            ChangeLocation((MouseEventArgs)e);
         }
 
         private void gMapControl1_Click(object sender, EventArgs e)
         {
-            var mouseEventArgs = (MouseEventArgs)e;
-            if (mouseEventArgs.Button != MouseButtons.Right) return;
-            CustomLocation(true, (MouseEventArgs)e);
+            var Args = (MouseEventArgs)e;
+
+            if (Args.Button == MouseButtons.Right)
+            {
+                ChangeLocation(Args);
+            }
+        }
+
+        private void ChangeLocation(MouseEventArgs e)
+        {
+            if (!IsExploring)
+            {
+                Position = gMapControl1.FromLocalToLatLng(e.X, e.Y);
+
+                SetPlayerPosition(Position);
+            }
         }
 
         private void btnLogin_Click(object sender, EventArgs e)
         {
             AttemptLogin();
         }
+
+        #region GUI
+        protected override void WndProc(ref Message m)
+        {
+            switch (m.Msg)
+            {
+                case 0x84:
+                    base.WndProc(ref m);
+                    if ((int)m.Result == 0x1)
+                        m.Result = (IntPtr)0x2;
+                    return;
+            }
+            base.WndProc(ref m);
+        }
+
+        private void Ex_Click(object sender, EventArgs e) //EXIT_APP
+        {
+            this.Close();
+        }
+
+        private void button1_Click(object sender, EventArgs e) //SquirBlue
+        {
+            this.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
+            Exit_Button.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
+            PokePoke.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
+
+            MapBorder.BackColor = Color.MediumTurquoise;
+            label1.BackColor = Color.MediumTurquoise;
+            txtHistory.BackColor = Color.MediumTurquoise;
+            btnLogin.BackColor = Color.MediumTurquoise;
+            btnPause.BackColor = Color.MediumTurquoise;
+        }
+
+        private void button2_Click(object sender, EventArgs e) //CharRed
+        {
+            this.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
+            Exit_Button.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
+            PokePoke.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
+
+            MapBorder.BackColor = Color.Coral;
+            label1.BackColor = Color.Coral;
+            txtHistory.BackColor = Color.Coral;
+            btnLogin.BackColor = Color.Coral;
+            btnPause.BackColor = Color.Coral;
+        }
+
+        private void button3_Click(object sender, EventArgs e) //BulbGreen
+        {
+            this.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
+            Exit_Button.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
+            PokePoke.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
+
+            MapBorder.BackColor = Color.LightGreen;
+            label1.BackColor = Color.LightGreen;
+            txtHistory.BackColor = Color.LightGreen;
+            btnLogin.BackColor = Color.LightGreen;
+            btnPause.BackColor = Color.LightGreen;
+        }
+
+        private void PokePoke_Click(object sender, EventArgs e)
+        {
+            if (label1.Visible == true)
+            {
+                label1.Visible = false;
+            }
+            else
+            {
+                label1.Visible = true;
+            };
+        }
+        #endregion
     }
 }

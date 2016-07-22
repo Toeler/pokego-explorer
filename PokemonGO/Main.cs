@@ -7,6 +7,7 @@ using System.Drawing;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
+using System.Collections.Generic;
 
 namespace PokemonGO
 {
@@ -19,10 +20,13 @@ namespace PokemonGO
         private Thread Exploration;
 
         private delegate void ClearCallback();
-        private delegate void MarkerCallback(GMarkerGoogle Marker);
+        private delegate void MarkerCallback(PointLatLng SearchOrigin, GMarkerGoogle Marker);
         private delegate void WriteCallback(string Line, bool Date);
-        
-        public Main()
+
+		private IList<ulong> _notifiedPokemon = new List<ulong>();
+		private IDictionary<PointLatLng, IList<GMapMarker>> MarkersByLocation = new Dictionary<PointLatLng, IList<GMapMarker>>();
+
+		public Main()
         {
             InitializeComponent();
 
@@ -121,7 +125,7 @@ namespace PokemonGO
             Exploration.Start();
         }
 
-        private void AddMarker(GMarkerGoogle Marker)
+        private void AddMarker(PointLatLng SearchOrigin, GMarkerGoogle Marker)
         {
             try
             {
@@ -129,11 +133,17 @@ namespace PokemonGO
                 {
                     var Callback = new MarkerCallback(AddMarker);
 
-                    Invoke(Callback, Marker);
+                    Invoke(Callback, SearchOrigin, Marker);
                 }
                 else
                 {
                     gMapControl1.Overlays.FirstOrDefault().Markers.Add(Marker);
+					IList<GMapMarker> Markers;
+					if (!MarkersByLocation.TryGetValue(SearchOrigin, out Markers)) {
+						Markers = new List<GMapMarker>();
+						MarkersByLocation.Add(SearchOrigin, Markers);
+					}
+					Markers.Add(Marker);
                 }
             }
             catch { }
@@ -162,15 +172,19 @@ namespace PokemonGO
 
                         var Objects = await Client.GetNearbyData();
 
-                        foreach (var Marker in Objects.Pokemons.Select(Specialized.Pokemon.Utils.CreateMarker))
-                        {
-                            AddMarker(Marker);
-                        }
+						ClearMapAtLocation(Destination);
 
-                        foreach (var Marker in Objects.Forts.Where(Fort => Fort.FortType != 1).Select(Specialized.Forts.Utils.CreateMarker))
+						var i1 = i;
+                        foreach (var pokemon in Objects.Pokemons)
                         {
-                            AddMarker(Marker);
-                        }
+							var Marker = Specialized.Pokemon.Utils.CreateMarker(pokemon);
+							AddMarker(Destination, Marker);
+							if ((i1 == 0 || !Settings.NOTIFICATION_BLACKLIST.Contains(pokemon.PokedexTypeId)) && !_notifiedPokemon.Contains(pokemon.EncounterId)) {
+								System.Media.SystemSounds.Beep.Play();
+								WriteLine($"Found {pokemon.PokedexTypeId.ToString().Substring(pokemon.PokedexTypeId.ToString().LastIndexOf("Pokemon", StringComparison.Ordinal) + 7)}");
+								_notifiedPokemon.Add(pokemon.EncounterId);
+							}
+						}
                     }
 
                     Thread.Sleep(Settings.STEP_DELAY * 1000);
@@ -182,7 +196,7 @@ namespace PokemonGO
 
                 WriteLine("Cleaning map...");
 
-                ClearMap();
+                //ClearMap();
 
                 WriteLine("Exploration complete.");
 
@@ -191,7 +205,9 @@ namespace PokemonGO
                 Specialized.Controls.Helper.SetEnabled(btnPause);
 
                 IsExploring = false;
-            }
+
+				btnPause_Click(null, null);
+			}
             catch (Exception e)
             {
             }
@@ -208,6 +224,20 @@ namespace PokemonGO
             }
             catch { }
         }
+
+		private void ClearMapAtLocation(PointLatLng Location) {
+			var Overlay = gMapControl1.Overlays.FirstOrDefault();
+
+			if (Overlay != null) {
+				IList<GMapMarker> Markers;
+				if (MarkersByLocation.TryGetValue(Location, out Markers)) {
+					foreach (var Marker in Markers) {
+						Overlay.Markers.Remove(Marker);
+					}
+					MarkersByLocation[Location] = new List<GMapMarker>();
+				}
+			}
+		}
 
         private void ClearMap()
         {
@@ -298,10 +328,8 @@ namespace PokemonGO
         {
             this.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
             Exit_Button.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
-            PokePoke.BackgroundImage = Properties.Resources._7a50045ab03c115d698fb9f533f90f1c;
 
             MapBorder.BackColor = Color.MediumTurquoise;
-            label1.BackColor = Color.MediumTurquoise;
             txtHistory.BackColor = Color.MediumTurquoise;
             btnLogin.BackColor = Color.MediumTurquoise;
             btnPause.BackColor = Color.MediumTurquoise;
@@ -311,10 +339,8 @@ namespace PokemonGO
         {
             this.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
             Exit_Button.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
-            PokePoke.BackgroundImage = Properties.Resources.e815a787fb770107c34238b202c40a1c;
 
             MapBorder.BackColor = Color.Coral;
-            label1.BackColor = Color.Coral;
             txtHistory.BackColor = Color.Coral;
             btnLogin.BackColor = Color.Coral;
             btnPause.BackColor = Color.Coral;
@@ -324,10 +350,8 @@ namespace PokemonGO
         {
             this.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
             Exit_Button.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
-            PokePoke.BackgroundImage = Properties.Resources.f60536429bb5c705c7427136c92cea84;
 
             MapBorder.BackColor = Color.LightGreen;
-            label1.BackColor = Color.LightGreen;
             txtHistory.BackColor = Color.LightGreen;
             btnLogin.BackColor = Color.LightGreen;
             btnPause.BackColor = Color.LightGreen;
@@ -335,14 +359,6 @@ namespace PokemonGO
 
         private void PokePoke_Click(object sender, EventArgs e)
         {
-            if (label1.Visible == true)
-            {
-                label1.Visible = false;
-            }
-            else
-            {
-                label1.Visible = true;
-            };
         }
         #endregion
     }
